@@ -1,0 +1,19 @@
+# macOS / editor
+.DS_Store
+*.swp
+*.swo
+.vscode/
+
+# C build artifacts
+*.o
+*.a
+*.so
+*.dSYM/
+
+# Executables / binaries
+minishell_stub
+
+# Local test / scratch outputs
+out*
+io_test
+count.txt
