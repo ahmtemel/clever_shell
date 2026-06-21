@@ -112,9 +112,10 @@ typedef struct s_lbuf
 {
 	char	data[LINE_CAP];
 	int		len;
-	char	saved[LINE_CAP];		/* preserves current edit during history nav */
-	int		hist_pos;				/* -1 = not navigating history               */
-	char	prediction[LINE_CAP];	/* last prediction received from ZMQ daemon  */
+	char	saved[LINE_CAP];		/* preserves current edit during history nav  */
+	int		hist_pos;				/* -1 = not navigating history                */
+	char	prediction[LINE_CAP];	/* adjusted suffix to display as ghost text   */
+	char	last_sent[LINE_CAP];	/* buffer content of the most recent ZMQ send */
 }	t_lbuf;
 
 /* Erase every visible character (cursor must already be at end). */
@@ -209,29 +210,219 @@ static char	*read_line_noterm(void)
 }
 
 /* =========================================================================
-** Interactive raw-mode read loop
+** Ghost Text rendering (Phase 5)
 **
-** Handles per-character input with:
-**   Enter        : return the accumulated line
-**   Ctrl+D       : EOF signal (return NULL if buffer empty)
-**   Backspace    : visual delete + buffer pop
-**   Ctrl+C       : SIGINT already delivered → EINTR → return ""
-**   ESC [ A/B    : up/down history navigation
-**   ESC [ C/D    : left/right silently ignored (Phase 5 adds cursor movement)
-**   Printable    : echo + buffer append
+** The cursor is always kept at the end of the REAL typed text.
+** The prediction suffix is rendered to the right of it in dim grey.
+**
+** ghost_clear : cursor at real-text-end → overwrite grey with spaces →
+**               move cursor back left → prediction = "".
+** ghost_render: cursor at real-text-end → write grey prediction →
+**               move cursor back left (stays at real-text-end).
+**
+** write_cursor_left: emit ANSI CSI n D (move cursor left by n).
 ** ========================================================================= */
 
 /*
-** Notify the AI daemon of the current buffer state and collect any
-** pending prediction in a non-blocking way.
-** Called after every keystroke that changes lb->data.
-** EAGAIN from zmq_ipc_recv is silently ignored; the terminal loop never
-** blocks waiting for the daemon.
+** Move cursor left n columns via ANSI CSI n D.
+** Used exclusively by ghost_render to park the cursor back after writing
+** the prediction text to the right.
+*/
+static void	write_cursor_left(int n)
+{
+	char	csi[16];
+	int		len;
+
+	if (n <= 0)
+		return ;
+	len = snprintf(csi, sizeof(csi), "\x1b[%dD", n);
+	if (len > 0)
+		write(STDOUT_FILENO, csi, (size_t)len);
+}
+
+/*
+** Erase the grey prediction from the screen.
+**
+** Previous approach (space-overwrite + cursor-left) was fragile: any prior
+** cursor drift caused the wrong number of columns to be overwritten, leading
+** to ghost text remnants ("gitt status" glitch) or double rendering.
+**
+** Fix: use ANSI EL (Erase in Line) \x1b[0K — erases from the current cursor
+** position to end of line WITHOUT moving the cursor.  Because the cursor is
+** always parked at the end of the real typed text (guaranteed by ghost_render),
+** this reliably wipes out exactly the grey suffix regardless of its length.
+*/
+static void	ghost_clear(t_lbuf *lb)
+{
+	if (lb->prediction[0] == '\0')
+		return ;
+	write(STDOUT_FILENO, "\x1b[0K", 4);
+	lb->prediction[0] = '\0';
+}
+
+/*
+** Render lb->prediction as dim grey text to the right of the real text.
+** Cursor starts and ends at the end of the real typed text.
+**
+** Sequence:
+**   \x1b[90m  – set foreground colour to dark grey (bright black)
+**   <prediction text>
+**   \x1b[0m   – reset all attributes
+**   \x1b[nD   – move cursor left n columns (back to end of real buffer)
+*/
+static void	ghost_render(t_lbuf *lb)
+{
+	int	plen;
+
+	plen = (int)strlen(lb->prediction);
+	if (plen == 0)
+		return ;
+	write(STDOUT_FILENO, "\x1b[90m", 5);
+	write(STDOUT_FILENO, lb->prediction, (size_t)plen);
+	write(STDOUT_FILENO, "\x1b[0m", 4);
+	write_cursor_left(plen);
+}
+
+/* =========================================================================
+** Interactive raw-mode read loop
+**
+** Handles per-character input with:
+**   Enter        : ghost erase → return the accumulated line
+**   Ctrl+D       : EOF signal (return NULL if buffer empty)
+**   Tab (0x09)   : accept prediction → append to buffer, write in white
+**   Backspace    : ghost erase → visual delete → request new prediction
+**   Ctrl+C       : SIGINT already delivered → EINTR → return ""
+**   ESC [ A/B    : ghost erase → up/down history navigation
+**   ESC [ C/D    : silently ignored (Phase 5 scope: end-of-line cursor only)
+**   Printable    : ghost erase → echo → request new prediction
+** ========================================================================= */
+
+/*
+** Validate and adjust the raw prediction received from the daemon.
+**
+** The daemon replied to last_sent, so the true full completion is:
+**   full = last_sent + raw
+**
+** The current buffer (lb->data) may have grown by one or more characters
+** since that send.  The adjusted ghost suffix is:
+**   lb->prediction = full[ lb->len : ]
+**
+** Validity conditions (all must hold):
+**   1. full fits in LINE_CAP.
+**   2. lb->data starts with last_sent  (buffer only grew, never shrank/changed).
+**   3. full starts with lb->data       (completion is consistent with current input).
+**
+** If any condition fails the prediction is stale (e.g. the user deleted chars
+** or the daemon is way behind) and is silently discarded.
+** Returns 1 when lb->prediction was set, 0 when discarded.
+*/
+static int	adjust_prediction(t_lbuf *lb, const char *raw)
+{
+	char	full[LINE_CAP];
+	int		ls_len;
+	int		raw_len;
+	int		full_len;
+
+	ls_len   = (int)strlen(lb->last_sent);
+	raw_len  = (int)strlen(raw);
+	full_len = ls_len + raw_len;
+	if (full_len >= LINE_CAP)
+		return (0);
+	if (lb->len < ls_len || memcmp(lb->last_sent, lb->data, (size_t)ls_len) != 0)
+		return (0);
+	memcpy(full, lb->last_sent, (size_t)ls_len);
+	memcpy(full + ls_len, raw, (size_t)raw_len + 1);
+	if (full_len < lb->len || memcmp(full, lb->data, (size_t)lb->len) != 0)
+		return (0);
+	memcpy(lb->prediction, full + lb->len, (size_t)(full_len - lb->len) + 1);
+	return (1);
+}
+
+/*
+** ZMQ update: recv → validate/adjust → render → remember → send.
+**
+** Order matters:
+**   1. Receive FIRST (before updating last_sent) so that last_sent still
+**      holds the buffer of the PREVIOUS send, letting adjust_prediction
+**      correctly reconstruct the full completion.
+**   2. Update last_sent to the CURRENT buffer.
+**   3. Send the current buffer (daemon will reply on the NEXT cycle).
+**
+** This eliminates the off-by-one lag: the ghost shown for buffer "gi" is
+** derived from the reply to "g" (last_sent + raw suffix = full completion),
+** adjusted to the suffix that extends "gi" – giving the correct "t status"
+** instead of the raw (mis-aligned) "it status".
 */
 static void	zmq_update(t_lbuf *lb)
 {
+	char	raw[LINE_CAP];
+
+	lb->prediction[0] = '\0';
+	if (zmq_ipc_recv(raw, LINE_CAP) && adjust_prediction(lb, raw))
+		ghost_render(lb);
+	memcpy(lb->last_sent, lb->data, (size_t)lb->len + 1);
 	zmq_ipc_send(lb->data);
-	zmq_ipc_recv(lb->prediction, LINE_CAP);
+}
+
+/*
+** Tab: accept the current prediction (if any).
+** The grey ghost is erased, the prediction is written in normal colour,
+** and appended permanently to the buffer.
+*/
+static void	tab_accept(t_lbuf *lb)
+{
+	char	tmp[LINE_CAP];
+	int		plen;
+
+	plen = (int)strlen(lb->prediction);
+	if (plen == 0 || lb->len + plen >= LINE_CAP)
+		return ;
+	memcpy(tmp, lb->prediction, (size_t)plen + 1);
+	ghost_clear(lb);
+	write(STDOUT_FILENO, tmp, (size_t)plen);
+	memcpy(lb->data + lb->len, tmp, (size_t)plen + 1);
+	lb->len += plen;
+	lb->hist_pos = -1;
+	zmq_update(lb);
+}
+
+static void	handle_escape(t_lbuf *lb)
+{
+	int	esc;
+
+	esc = parse_escape_seq();
+	if (esc == ESC_UP)
+	{
+		if (g_hist_len == 0)
+			return ;
+		if (lb->hist_pos == -1)
+		{
+			memcpy(lb->saved, lb->data, (size_t)lb->len + 1);
+			lb->hist_pos = g_hist_len;
+		}
+		if (lb->hist_pos > 0)
+		{
+			lb->hist_pos--;
+			ghost_clear(lb);
+			lb_set(lb, g_hist[lb->hist_pos]);
+			zmq_update(lb);
+		}
+	}
+	else if (esc == ESC_DOWN)
+	{
+		if (lb->hist_pos == -1)
+			return ;
+		lb->hist_pos++;
+		ghost_clear(lb);
+		if (lb->hist_pos >= g_hist_len)
+		{
+			lb->hist_pos = -1;
+			lb_set(lb, lb->saved);
+		}
+		else
+			lb_set(lb, g_hist[lb->hist_pos]);
+		zmq_update(lb);
+	}
 }
 
 char	*read_line(const char *prompt)
@@ -239,15 +430,15 @@ char	*read_line(const char *prompt)
 	t_lbuf			lb;
 	unsigned char	c;
 	ssize_t			n;
-	int				esc;
 
 	if (!isatty(STDIN_FILENO))
 		return (read_line_noterm());
-	lb.len           = 0;
-	lb.data[0]       = '\0';
-	lb.saved[0]      = '\0';
-	lb.prediction[0] = '\0';
-	lb.hist_pos      = -1;
+	lb.len            = 0;
+	lb.data[0]        = '\0';
+	lb.saved[0]       = '\0';
+	lb.prediction[0]  = '\0';
+	lb.last_sent[0]   = '\0';
+	lb.hist_pos       = -1;
 	write(STDOUT_FILENO, prompt, strlen(prompt));
 	while (1)
 	{
@@ -259,9 +450,13 @@ char	*read_line(const char *prompt)
 			return (strdup(""));
 		}
 		if (n <= 0)
+		{
+			ghost_clear(&lb);
 			return (NULL);
+		}
 		if (c == '\n' || c == '\r')
 		{
+			ghost_clear(&lb);
 			write(STDOUT_FILENO, "\n", 1);
 			lb.data[lb.len] = '\0';
 			return (strdup(lb.data));
@@ -269,62 +464,39 @@ char	*read_line(const char *prompt)
 		if (c == '\x04')
 		{
 			if (lb.len == 0)
+			{
+				ghost_clear(&lb);
 				return (NULL);
+			}
+			continue ;
+		}
+		if (c == '\t')
+		{
+			tab_accept(&lb);
 			continue ;
 		}
 		if (c == '\x7f' || c == '\b')
 		{
 			if (lb.len > 0)
 			{
+				ghost_clear(&lb);
 				lb.len--;
 				lb.data[lb.len] = '\0';
 				write(STDOUT_FILENO, "\b \b", 3);
-				lb.prediction[0] = '\0';
 				zmq_update(&lb);
 			}
 			continue ;
 		}
 		if (c == '\x1b')
 		{
-			esc = parse_escape_seq();
-			if (esc == ESC_UP)
-			{
-				if (g_hist_len == 0)
-					continue ;
-				if (lb.hist_pos == -1)
-				{
-					memcpy(lb.saved, lb.data, (size_t)lb.len + 1);
-					lb.hist_pos = g_hist_len;
-				}
-				if (lb.hist_pos > 0)
-				{
-					lb.hist_pos--;
-					lb_set(&lb, g_hist[lb.hist_pos]);
-					lb.prediction[0] = '\0';
-					zmq_update(&lb);
-				}
-			}
-			else if (esc == ESC_DOWN)
-			{
-				if (lb.hist_pos == -1)
-					continue ;
-				lb.hist_pos++;
-				if (lb.hist_pos >= g_hist_len)
-				{
-					lb.hist_pos = -1;
-					lb_set(&lb, lb.saved);
-				}
-				else
-					lb_set(&lb, g_hist[lb.hist_pos]);
-				lb.prediction[0] = '\0';
-				zmq_update(&lb);
-			}
+			handle_escape(&lb);
 			continue ;
 		}
 		if (c >= 32 && c < 127)
 		{
 			if (lb.len < LINE_CAP - 1)
 			{
+				ghost_clear(&lb);
 				lb.data[lb.len++] = (char)c;
 				lb.data[lb.len]   = '\0';
 				write(STDOUT_FILENO, &c, 1);
