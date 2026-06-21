@@ -33,6 +33,7 @@ int	main(void)
 	char	*line;
 
 	init_raw_mode();
+	zmq_ipc_init();
 	while (1)
 	{
 		setup_signals_interactive();
@@ -59,6 +60,7 @@ int	main(void)
 		free(line);
 	}
 	history_free();
+	zmq_ipc_cleanup();
 	restore_terminal();
 	return (g_exit_status);
 }

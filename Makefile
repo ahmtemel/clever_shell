@@ -4,6 +4,13 @@ CC      = gcc
 CFLAGS  = -Wall -Wextra -Werror
 IFLAGS  = -Iinc
 
+# --------------------------------------------------------------------------- #
+# ZeroMQ – detected via pkg-config (installed by Homebrew on macOS).          #
+# pkg-config emits the correct -I and -L/-l flags for the local installation. #
+# --------------------------------------------------------------------------- #
+ZMQ_CFLAGS  = $(shell pkg-config --cflags libzmq 2>/dev/null)
+ZMQ_LDFLAGS = $(shell pkg-config --libs   libzmq 2>/dev/null)
+
 SRC_DIR = src
 OBJ_DIR = obj
 
@@ -15,17 +22,18 @@ SRCS    = $(SRC_DIR)/main.c      \
           $(SRC_DIR)/debug.c     \
           $(SRC_DIR)/signals.c   \
           $(SRC_DIR)/builtins.c  \
-          $(SRC_DIR)/executor.c
+          $(SRC_DIR)/executor.c  \
+          $(SRC_DIR)/zmq_ipc.c
 
 OBJS    = $(SRCS:$(SRC_DIR)/%.c=$(OBJ_DIR)/%.o)
 
 all: $(NAME)
 
 $(NAME): $(OBJS)
-	$(CC) $(CFLAGS) $(OBJS) -o $(NAME)
+	$(CC) $(CFLAGS) $(OBJS) -o $(NAME) $(ZMQ_LDFLAGS)
 
 $(OBJ_DIR)/%.o: $(SRC_DIR)/%.c | $(OBJ_DIR)
-	$(CC) $(CFLAGS) $(IFLAGS) -c $< -o $@
+	$(CC) $(CFLAGS) $(IFLAGS) $(ZMQ_CFLAGS) -c $< -o $@
 
 $(OBJ_DIR):
 	mkdir -p $(OBJ_DIR)

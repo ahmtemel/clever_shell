@@ -101,6 +101,12 @@ char		*read_line(const char *prompt);
 void		history_add(const char *line);
 void		history_free(void);
 
+/* zmq_ipc.c */
+void		zmq_ipc_init(void);
+void		zmq_ipc_send(const char *buf);
+int			zmq_ipc_recv(char *out, size_t max);
+void		zmq_ipc_cleanup(void);
+
 /* signals.c */
 void		setup_signals_interactive(void);
 void		setup_signals_execution(void);

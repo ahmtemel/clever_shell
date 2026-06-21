@@ -112,8 +112,9 @@ typedef struct s_lbuf
 {
 	char	data[LINE_CAP];
 	int		len;
-	char	saved[LINE_CAP];	/* preserves current edit during history nav */
-	int		hist_pos;			/* -1 = not navigating history              */
+	char	saved[LINE_CAP];		/* preserves current edit during history nav */
+	int		hist_pos;				/* -1 = not navigating history               */
+	char	prediction[LINE_CAP];	/* last prediction received from ZMQ daemon  */
 }	t_lbuf;
 
 /* Erase every visible character (cursor must already be at end). */
@@ -220,6 +221,19 @@ static char	*read_line_noterm(void)
 **   Printable    : echo + buffer append
 ** ========================================================================= */
 
+/*
+** Notify the AI daemon of the current buffer state and collect any
+** pending prediction in a non-blocking way.
+** Called after every keystroke that changes lb->data.
+** EAGAIN from zmq_ipc_recv is silently ignored; the terminal loop never
+** blocks waiting for the daemon.
+*/
+static void	zmq_update(t_lbuf *lb)
+{
+	zmq_ipc_send(lb->data);
+	zmq_ipc_recv(lb->prediction, LINE_CAP);
+}
+
 char	*read_line(const char *prompt)
 {
 	t_lbuf			lb;
@@ -229,10 +243,11 @@ char	*read_line(const char *prompt)
 
 	if (!isatty(STDIN_FILENO))
 		return (read_line_noterm());
-	lb.len      = 0;
-	lb.data[0]  = '\0';
-	lb.saved[0] = '\0';
-	lb.hist_pos = -1;
+	lb.len           = 0;
+	lb.data[0]       = '\0';
+	lb.saved[0]      = '\0';
+	lb.prediction[0] = '\0';
+	lb.hist_pos      = -1;
 	write(STDOUT_FILENO, prompt, strlen(prompt));
 	while (1)
 	{
@@ -264,6 +279,8 @@ char	*read_line(const char *prompt)
 				lb.len--;
 				lb.data[lb.len] = '\0';
 				write(STDOUT_FILENO, "\b \b", 3);
+				lb.prediction[0] = '\0';
+				zmq_update(&lb);
 			}
 			continue ;
 		}
@@ -283,6 +300,8 @@ char	*read_line(const char *prompt)
 				{
 					lb.hist_pos--;
 					lb_set(&lb, g_hist[lb.hist_pos]);
+					lb.prediction[0] = '\0';
+					zmq_update(&lb);
 				}
 			}
 			else if (esc == ESC_DOWN)
@@ -297,6 +316,8 @@ char	*read_line(const char *prompt)
 				}
 				else
 					lb_set(&lb, g_hist[lb.hist_pos]);
+				lb.prediction[0] = '\0';
+				zmq_update(&lb);
 			}
 			continue ;
 		}
@@ -307,6 +328,7 @@ char	*read_line(const char *prompt)
 				lb.data[lb.len++] = (char)c;
 				lb.data[lb.len]   = '\0';
 				write(STDOUT_FILENO, &c, 1);
+				zmq_update(&lb);
 			}
 			continue ;
 		}
