@@ -1,40 +1,52 @@
 #include "minishell.h"
 
 /*
-** Phase 1 – test driver.
-** Reads a line with readline, runs it through the lexer and parser,
-** prints the resulting AST, then frees all memory.
-** Exits cleanly on Ctrl-D (readline returns NULL).
+** Phase 2 – fully functional shell loop.
+** Reads input with readline, runs it through Lexer → Parser → Executor,
+** then frees all temporary memory before the next iteration.
+**
+** Signal strategy:
+**   • rl_catch_signals = 0  : we fully own signal handling (no readline default handlers).
+**   • Interactive mode       : SIGINT prints newline + redraws blank prompt.
+**   • Execution mode         : SIGINT set to lighter handler; children get SIG_DFL.
+**   • After each command     : return to interactive mode handlers.
 */
 
-static void	print_tokens(t_token *tok)
+/*
+** Process one raw input line: lex → parse → execute → free.
+** Returns 0 to keep the loop running, 1 to stop (unused here, exit handled in builtin).
+*/
+static void	process_line(char *line)
 {
-	int				i;
-	const char		*names[] = {
-		"WORD", "PIPE", "REDIR_IN", "REDIR_OUT", "APPEND", "HEREDOC"
-	};
+	t_token		*tokens;
+	t_ast_node	*ast;
 
-	i = 0;
-	printf("--- Tokens ---\n");
-	while (tok)
-	{
-		printf("  [%d] type=%-9s value=%s\n",
-			i++,
-			names[tok->type],
-			tok->value ? tok->value : "(null)");
-		tok = tok->next;
-	}
+	tokens = ft_lexer(line);
+	if (!tokens)
+		return ;
+	ast = ft_parse(tokens);
+	free_tokens(tokens);
+	if (!ast)
+		return ;
+	execute_node(ast);
+	free_ast(ast);
 }
 
 int	main(void)
 {
-	char		*line;
-	t_token		*tokens;
-	t_ast_node	*ast;
+	char	*line;
 
 	while (1)
 	{
+		setup_signals_interactive();
 		line = readline("clever_shell> ");
+		if (g_signal == SIGINT)
+		{
+			g_signal = 0;
+			g_exit_status = 130;
+			free(line);
+			continue ;
+		}
 		if (!line)
 		{
 			printf("\nexit\n");
@@ -46,23 +58,9 @@ int	main(void)
 			continue ;
 		}
 		add_history(line);
-		tokens = ft_lexer(line);
+		process_line(line);
 		free(line);
-		if (!tokens)
-			continue ;
-		print_tokens(tokens);
-		ast = ft_parse(tokens);
-		free_tokens(tokens);
-		if (!ast)
-		{
-			printf("--- AST: (parse error) ---\n\n");
-			continue ;
-		}
-		printf("--- AST ---\n");
-		print_ast(ast, 0);
-		printf("---\n\n");
-		free_ast(ast);
 	}
 	clear_history();
-	return (0);
+	return (g_exit_status);
 }

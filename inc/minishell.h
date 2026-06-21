@@ -5,8 +5,19 @@
 # include <stdlib.h>
 # include <string.h>
 # include <unistd.h>
+# include <fcntl.h>
+# include <signal.h>
+# include <sys/wait.h>
+# include <limits.h>
 # include <readline/readline.h>
 # include <readline/history.h>
+
+/* ========================================================================= */
+/* Globals (defined in signals.c and executor.c)                             */
+/* ========================================================================= */
+
+extern volatile sig_atomic_t	g_signal;
+extern int						g_exit_status;
 
 /* ========================================================================= */
 /* Token                                                                      */
@@ -43,7 +54,7 @@ typedef enum e_ast_type
 ** Redirection attached to a command node.
 ** type : TOKEN_REDIRECT_IN | TOKEN_REDIRECT_OUT |
 **        TOKEN_REDIRECT_APPEND | TOKEN_HEREDOC
-** file : target filename (or heredoc delimiter)
+** file : target filename (or heredoc delimiter for HEREDOC)
 */
 typedef struct s_redirect
 {
@@ -81,5 +92,17 @@ void		free_ast(t_ast_node *node);
 
 /* debug.c */
 void		print_ast(t_ast_node *node, int depth);
+
+/* signals.c */
+void		setup_signals_interactive(void);
+void		setup_signals_execution(void);
+void		setup_signals_child(void);
+
+/* builtins.c */
+int			is_builtin(const char *name);
+int			run_builtin(t_ast_node *node);
+
+/* executor.c */
+int			execute_node(t_ast_node *node);
 
 #endif

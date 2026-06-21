@@ -21,11 +21,14 @@ endif
 SRC_DIR = src
 OBJ_DIR = obj
 
-SRCS    = $(SRC_DIR)/main.c   \
-          $(SRC_DIR)/lexer.c  \
-          $(SRC_DIR)/parser.c \
-          $(SRC_DIR)/free.c   \
-          $(SRC_DIR)/debug.c
+SRCS    = $(SRC_DIR)/main.c      \
+          $(SRC_DIR)/lexer.c     \
+          $(SRC_DIR)/parser.c    \
+          $(SRC_DIR)/free.c      \
+          $(SRC_DIR)/debug.c     \
+          $(SRC_DIR)/signals.c   \
+          $(SRC_DIR)/builtins.c  \
+          $(SRC_DIR)/executor.c
 
 OBJS    = $(SRCS:$(SRC_DIR)/%.c=$(OBJ_DIR)/%.o)
 
