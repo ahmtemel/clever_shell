@@ -3,15 +3,14 @@
 volatile sig_atomic_t	g_signal = 0;
 
 /*
-** Interactive handler (shell waiting at readline prompt).
-** Writes a newline and uses readline helpers to show a blank new prompt.
-** rl_catch_signals must be 0 so we fully own signal handling.
+** Interactive handler.
+** In raw mode the main read() loop will see EINTR and return "".
+** Writing "\n" ensures the cursor moves to a fresh line.
 */
 static void	sigint_interactive(int sig)
 {
 	g_signal = sig;
 	write(STDOUT_FILENO, "\n", 1);
-	rl_on_new_line();
 }
 
 /*

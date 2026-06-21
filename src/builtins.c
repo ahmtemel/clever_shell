@@ -101,8 +101,9 @@ static int	builtin_exit(char **args)
 	code = g_exit_status;
 	if (args[1])
 		code = atoi(args[1]);
-	printf("exit\n");
-	clear_history();
+	write(STDOUT_FILENO, "exit\n", 5);
+	history_free();
+	restore_terminal();
 	exit(code);
 }
 

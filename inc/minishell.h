@@ -7,10 +7,10 @@
 # include <unistd.h>
 # include <fcntl.h>
 # include <signal.h>
+# include <errno.h>
 # include <sys/wait.h>
 # include <limits.h>
-# include <readline/readline.h>
-# include <readline/history.h>
+# include <termios.h>
 
 /* ========================================================================= */
 /* Globals (defined in signals.c and executor.c)                             */
@@ -92,6 +92,14 @@ void		free_ast(t_ast_node *node);
 
 /* debug.c */
 void		print_ast(t_ast_node *node, int depth);
+
+/* input.c */
+void		init_raw_mode(void);
+void		restore_terminal(void);
+void		reapply_raw_mode(void);
+char		*read_line(const char *prompt);
+void		history_add(const char *line);
+void		history_free(void);
 
 /* signals.c */
 void		setup_signals_interactive(void);

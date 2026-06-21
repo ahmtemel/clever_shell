@@ -1,21 +1,17 @@
 #include "minishell.h"
 
 /*
-** Phase 2 – fully functional shell loop.
-** Reads input with readline, runs it through Lexer → Parser → Executor,
-** then frees all temporary memory before the next iteration.
+** Phase 3 – raw terminal input loop.
+** readline is replaced by our own read_line() which operates in
+** Non-Canonical (Raw) mode: every keystroke is received immediately,
+** ECHO is disabled (we echo manually), and Backspace is handled visually.
 **
-** Signal strategy:
-**   • rl_catch_signals = 0  : we fully own signal handling (no readline default handlers).
-**   • Interactive mode       : SIGINT prints newline + redraws blank prompt.
-**   • Execution mode         : SIGINT set to lighter handler; children get SIG_DFL.
-**   • After each command     : return to interactive mode handlers.
+** Signal strategy (unchanged from Phase 2):
+**   Interactive : SIGINT → sigint_interactive (writes "\n") → read() EINTR
+**                 → read_line returns "" → main loop clears g_signal.
+**   Execution   : SIGINT → lighter handler; children hold SIG_DFL.
 */
 
-/*
-** Process one raw input line: lex → parse → execute → free.
-** Returns 0 to keep the loop running, 1 to stop (unused here, exit handled in builtin).
-*/
 static void	process_line(char *line)
 {
 	t_token		*tokens;
@@ -36,10 +32,11 @@ int	main(void)
 {
 	char	*line;
 
+	init_raw_mode();
 	while (1)
 	{
 		setup_signals_interactive();
-		line = readline("clever_shell> ");
+		line = read_line("clever_shell> ");
 		if (g_signal == SIGINT)
 		{
 			g_signal = 0;
@@ -49,7 +46,7 @@ int	main(void)
 		}
 		if (!line)
 		{
-			printf("\nexit\n");
+			write(STDOUT_FILENO, "\nexit\n", 6);
 			break ;
 		}
 		if (*line == '\0')
@@ -57,10 +54,11 @@ int	main(void)
 			free(line);
 			continue ;
 		}
-		add_history(line);
+		history_add(line);
 		process_line(line);
 		free(line);
 	}
-	clear_history();
+	history_free();
+	restore_terminal();
 	return (g_exit_status);
 }

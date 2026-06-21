@@ -149,11 +149,9 @@ static int	heredoc_read(const char *delim)
 	if (pipe(pfd) < 0)
 		return (-1);
 	dlen = strlen(delim);
-	line = NULL;
 	while (1)
 	{
-		write(STDOUT_FILENO, "heredoc> ", 9);
-		line = readline("");
+		line = read_line("heredoc> ");
 		if (!line)
 			break ;
 		if (strlen(line) == dlen && memcmp(line, delim, dlen) == 0)
@@ -254,21 +252,22 @@ static int	execute_external(t_ast_node *node)
 	{
 		setup_signals_child();
 		if (apply_redirections(node->redirects) < 0)
-			exit(1);
+			_exit(1);
 		if (!path)
 		{
 			fprintf(stderr, "clever_shell: %s: command not found\n",
 				node->args[0]);
-			exit(127);
+			_exit(127);
 		}
 		execve(path, node->args, environ);
 		perror(node->args[0]);
 		free(path);
-		exit(126);
+		_exit(126);
 	}
 	free(path);
 	setup_signals_execution();
 	waitpid(pid, &status, 0);
+	reapply_raw_mode();
 	setup_signals_interactive();
 	update_exit_status(status);
 	return (g_exit_status);
@@ -361,9 +360,9 @@ static int	execute_pipe(t_ast_node *node)
 	{
 		close(fd[0]);
 		if (dup2(fd[1], STDOUT_FILENO) < 0)
-			exit(1);
+			_exit(1);
 		close(fd[1]);
-		exit(execute_node(node->left));
+		_exit(execute_node(node->left));
 	}
 	pid_r = fork();
 	if (pid_r < 0)
@@ -378,15 +377,16 @@ static int	execute_pipe(t_ast_node *node)
 	{
 		close(fd[1]);
 		if (dup2(fd[0], STDIN_FILENO) < 0)
-			exit(1);
+			_exit(1);
 		close(fd[0]);
-		exit(execute_node(node->right));
+		_exit(execute_node(node->right));
 	}
 	close(fd[0]);
 	close(fd[1]);
 	setup_signals_execution();
 	waitpid(pid_l, NULL, 0);
 	waitpid(pid_r, &status, 0);
+	reapply_raw_mode();
 	setup_signals_interactive();
 	update_exit_status(status);
 	return (g_exit_status);
