@@ -1,9 +1,9 @@
 # clever_shell — Deneysel Değerlendirme Raporu
 
-**Veri kaynağı:** `Kendi kabuk geçmişim`  
-**Eğitim komutu sayısı:** 730  
+**Veri kaynağı:** `Kendi kabuk geçmişim (snapshot, 1001 komut, 2026-06-24)`  
+**Eğitim komutu sayısı:** 728  
 **Test girdisi sayısı:** 200  
-**Geçerli test komutu:** 182  
+**Geçerli test komutu:** 183  
 
 ---
 
@@ -18,51 +18,51 @@ minimum frekans eşiği (MIN_CMD_FREQ = 1) ve önek eşleme geri dönüş mekani
 ## 4.2 Önerilen Yapılandırma — Temel Metrikler
 
 **Tablo 4.1 — Önerilen yapılandırmanın temel performans metrikleri.**  
-*Kendi kabuk geçmişi (`Kendi kabuk geçmişim`, 730 eğitim / 182 test komutu). Kalın: önerilen değer.*
+*Kendi kabuk geçmişi (`Kendi kabuk geçmişim (snapshot, 1001 komut, 2026-06-24)`, 728 eğitim / 183 test komutu). Kalın: önerilen değer.*
 
 | Metrik | Değer |
 |--------|-------|
-| Tuş Tasarrufu Oranı (KSR)                          | **34.3%** |
-| Doğruluk@1 (Sonraki Kelime)                        | **25.5%** |
-| Doğruluk@3 (Sonraki Kelime)                        | **46.1%** |
-| Önek Tamamlama Doğruluğu                           | **47.6%** |
-| Önek-Koşullu Tamamlama Doğruluğu (≥2 karakter)    | **46.0%** |
-| Top-5 Komut Kabul Oranı                            | **49.2%** |
-| Kapsama (sessiz kalmayan oran)                      | **79.4%** |
-| Gecikme p50                                         | **0.032 ms** |
-| Gecikme p95                                         | **0.071 ms** |
-| Gecikme p99                                         | **0.091 ms** |
-| n-gram Bağlam Sayısı                               | **229** |
-| Tablo Bellek Ayak İzi (yüzeysel)                   | **88.4 KB** |
+| Tuş Tasarrufu Oranı (KSR)                          | **27.1%** |
+| Doğruluk@1 (Sonraki Kelime)                        | **24.8%** |
+| Doğruluk@3 (Sonraki Kelime)                        | **45.9%** |
+| Önek Tamamlama Doğruluğu                           | **39.5%** |
+| Önek-Koşullu Tamamlama Doğruluğu (≥2 karakter)    | **35.0%** |
+| Top-5 Komut Kabul Oranı                            | **55.5%** |
+| Kapsama (sessiz kalmayan oran)                      | **78.6%** |
+| Gecikme p50                                         | **0.017 ms** |
+| Gecikme p95                                         | **0.041 ms** |
+| Gecikme p99                                         | **0.053 ms** |
+| n-gram Bağlam Sayısı                               | **146** |
+| Tablo Bellek Ayak İzi (yüzeysel)                   | **58.1 KB** |
 
 ---
 
 ## 4.3 Ablasyon Çalışması
 
 **Tablo 4.2 — Ablasyon çalışması: yapılandırma karşılaştırması.**  
-*Kendi kabuk geçmişi (`Kendi kabuk geçmişim`, 730 eğitim / 182 test komutu). Kalın: önerilen yapılandırma.*
+*Kendi kabuk geçmişi (`Kendi kabuk geçmişim (snapshot, 1001 komut, 2026-06-24)`, 728 eğitim / 183 test komutu). Kalın: önerilen yapılandırma.*
 
 | Yapılandırma | KSR (%) | Doğruluk@1 (%) | Önek Doğ. (%) | Önek-Koş. (%) | Top-5 Komut (%) | Kapsama (%) | p50 (ms) |
 |:-------------|--------:|---------------:|--------------:|--------------:|----------------:|------------:|---------:|
-| **Önerilen (k=3, λ=0,005)** | 34.3 | 25.5 | 47.6 | 46.0 | 49.2 | 79.4 | 0.032 |
-| k=1 (tekli bağlam) | 34.3 | 25.5 | 47.6 | 46.0 | 49.2 | 79.4 | 0.033 |
-| k=2 (ikili bağlam) | 34.3 | 25.5 | 47.6 | 46.0 | 49.2 | 79.4 | 0.033 |
-| Geri alma yok (k=3) | 34.3 | 25.5 | 47.6 | 46.0 | 49.2 | 77.6 | 0.033 |
-| λ=0 (azalma yok) | 34.3 | 25.5 | 47.6 | 46.0 | 49.2 | 79.4 | 0.033 |
-| λ=0,02 (hızlı azalma) | 34.3 | 25.5 | 47.6 | 46.0 | 49.2 | 79.4 | 0.033 |
-| Yalnızca frekans | 34.2 | 9.8 | 47.6 | 46.0 | 49.2 | 79.4 | 0.033 |
-| En sık komut | 32.5 | 9.8 | 36.1 | 35.3 | 0.0 | 72.2 | 0.017 |
+| **Önerilen (k=3, λ=0,005)** | 27.1 | 24.8 | 39.5 | 35.0 | 55.5 | 78.6 | 0.017 |
+| k=1 (tekli bağlam) | 27.1 | 24.8 | 39.5 | 35.0 | 55.5 | 78.6 | 0.020 |
+| k=2 (ikili bağlam) | 27.1 | 24.8 | 39.5 | 35.0 | 55.5 | 78.6 | 0.017 |
+| Geri alma yok (k=3) | 27.1 | 24.8 | 39.5 | 35.0 | 55.5 | 76.6 | 0.017 |
+| λ=0 (azalma yok) | 27.1 | 24.8 | 39.5 | 35.0 | 55.5 | 78.6 | 0.017 |
+| λ=0,02 (hızlı azalma) | 27.1 | 24.8 | 39.5 | 35.0 | 55.5 | 78.6 | 0.019 |
+| Yalnızca frekans | 27.1 | 9.2 | 39.5 | 35.0 | 55.5 | 78.6 | 0.018 |
+| En sık komut | 25.4 | 9.2 | 26.2 | 22.5 | 0.0 | 69.1 | 0.009 |
 
 ---
 
 ## 4.4 Temel Bulgular
 
-1. Önerilen k=3 kelime-Markov modeli **KSR = 34.3%** elde etmiştir;  
-   100 karakter başına yaklaşık 34 tuş tasarrufu sağlar.
+1. Önerilen k=3 kelime-Markov modeli **KSR = 27.1%** elde etmiştir;  
+   100 karakter başına yaklaşık 27 tuş tasarrufu sağlar.
 2. En iyi referans yöntemini **+0.1% KSR** farkıyla geçmektedir  
-   (önerilen: 34.3% — en iyi referans: 34.2%).
+   (önerilen: 27.1% — en iyi referans: 27.1%).
 3. Çıkarım gecikmesi 5 ms hedefinin çok altındadır:  
-   p99 = 0.091 ms.
+   p99 = 0.053 ms.
 4. Geri alma (backoff) mekanizması kritik öneme sahiptir: devre dışı bırakıldığında  
    kapsama düşerken kesinlik kazancı elde edilememektedir.
 5. λ=0,005 azalma katsayısı eski alışkanlıkları tamamen atmadan  

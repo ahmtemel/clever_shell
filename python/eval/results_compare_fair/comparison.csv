@@ -1,0 +1,8 @@
+﻿Metrik,"Kendi Geçmişim (snapshot, frozen)",Siber-Güvenlik Seti (filtresiz — adil)
+Tuş Tasarrufu Oranı (KSR %),27.1,47.2
+Doğruluk@1 (%),24.8,29.0
+Doğruluk@3 (%),45.9,54.7
+Önek-Koşullu Tamamlama Doğ. (≥2 kar.%),35.0,68.5
+Top-5 Komut Kabul Oranı (%),55.5,25.3
+Kapsama (%),78.6,94.6
+Gecikme p99 (ms),0.053,0.615

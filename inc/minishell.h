@@ -105,6 +105,8 @@ void		history_free(void);
 void		zmq_ipc_init(void);
 void		zmq_ipc_send(const char *buf);
 int			zmq_ipc_recv(char *out, size_t max);
+int			zmq_ipc_recv_timeout(char *out, size_t max, int timeout_ms);
+void		zmq_ipc_drain(void);
 void		zmq_ipc_cleanup(void);
 
 /* signals.c */

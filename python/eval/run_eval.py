@@ -62,6 +62,11 @@ def _parse_args() -> argparse.Namespace:
         "--no-filter", action="store_true",
         help="Eğitim seti üzerinde is_valid_command + frekans filtresini devre dışı bırak.",
     )
+    p.add_argument(
+        "--fair", action="store_true",
+        help="Adil değerlendirme: hem eğitim hem de test seti filtresiz çalışır "
+             "(filter_train=False, filter_test=False). Tüm komutlar dahil edilir.",
+    )
     return p.parse_args()
 
 
@@ -72,6 +77,7 @@ def run(
     train_ratio=0.8,
     latency_samples=1000,
     filter_train=True,
+    filter_test=True,
 ) -> list:
     """
     Pipeline'ı programatik olarak çalıştır (compare.py tarafından kullanılabilir).
@@ -88,6 +94,7 @@ def run(
         path=history_path,
         train_ratio=train_ratio,
         filter_train=filter_train,
+        filter_test=filter_test,
     )
     print(
         f"[eval] eğitim={len(train_entries)}, "
@@ -174,7 +181,8 @@ def main() -> None:
         label=args.label,
         train_ratio=args.train_ratio,
         latency_samples=args.latency_samples,
-        filter_train=not args.no_filter,
+        filter_train=not (args.no_filter or args.fair),
+        filter_test=not args.fair,
     )
 
 

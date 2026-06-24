@@ -1,0 +1,8 @@
+ls -la
+echo hi | cat
+ls > /tmp/x.txt
+cat /tmp/x.txt
+echo "unclosed
+ls
+pwd
+exit

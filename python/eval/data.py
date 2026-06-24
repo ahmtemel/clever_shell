@@ -89,29 +89,41 @@ def load_split(
     path: Optional[str] = None,
     train_ratio: float = 0.8,
     filter_train: bool = True,
+    filter_test: bool = True,
     min_cmd_freq: int = 1,
 ) -> Tuple[List[Entry], List[Entry], List[str]]:
     """
-    Convenience wrapper: load → split → optionally filter train set.
+    Convenience wrapper: load → split → optionally filter train/test sets.
+
+    Args:
+        path:          History file path; auto-detected if None.
+        train_ratio:   Fraction of entries for training (chronological split).
+        filter_train:  Apply is_valid_command + frequency floor to TRAIN set.
+        filter_test:   Apply is_valid_command to TEST commands (default True).
+                       Set False for unbiased coverage over all commands.
+        min_cmd_freq:  Minimum frequency for frequency-floor filter.
 
     Returns:
-        train_entries  – filtered entries for model training
-        test_entries   – unfiltered entries (for realistic eval)
-        test_commands  – bare command strings extracted from test_entries
+        train_entries  – (optionally filtered) entries for model training
+        test_entries   – raw entries (for coverage stats)
+        test_commands  – bare command strings from test set
     """
     all_entries = load_entries(path)
     train_raw, test_entries = chronological_split(all_entries, train_ratio)
 
     if filter_train:
-        train_valid  = [(ts, cmd) for ts, cmd in train_raw if is_valid_command(cmd)]
+        train_valid   = [(ts, cmd) for ts, cmd in train_raw if is_valid_command(cmd)]
         train_entries = apply_frequency_floor(train_valid, min_freq=min_cmd_freq)
     else:
         train_entries = train_raw
 
-    # Extract bare command strings from the test set (valid commands only)
-    test_commands = [
-        cmd for _, cmd in test_entries
-        if cmd.strip() and is_valid_command(cmd)
-    ]
+    # Extract bare command strings from the test set
+    if filter_test:
+        test_commands = [
+            cmd for _, cmd in test_entries
+            if cmd.strip() and is_valid_command(cmd)
+        ]
+    else:
+        test_commands = [cmd for _, cmd in test_entries if cmd.strip()]
 
     return train_entries, test_entries, test_commands

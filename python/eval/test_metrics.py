@@ -373,3 +373,63 @@ def test_runner_build_mfreq_baseline():
     model = build_model(cfg, train_entries)
     pred = model.predict_suffix("")
     assert isinstance(pred, str)
+
+
+# ── Test 11: command_chain smoke tests ────────────────────────────────────────
+
+def test_command_chain_train_predict():
+    """CommandChain eğitim ve tahmin döngüsü temel doğruluk."""
+    from python.eval.command_chain import CommandChain
+
+    chain = CommandChain(k=2, token_mode=False)
+    session = [(0, "git status"), (1, "git diff"), (2, "git commit -m 'x'")]
+    chain.train_session(session, weight=1.0)
+
+    preds = chain.predict(["git status", "git diff"], top_k=5)
+    assert isinstance(preds, list), "predict must return list"
+    assert len(preds) >= 1
+    # En çok gözlenen geçiş (git status, git diff) -> git commit ...
+    assert preds[0] == "git commit -m 'x'", f"Unexpected top-1: {preds[0]}"
+
+
+def test_command_chain_session_isolation():
+    """N-gram'lar oturum sınırını aşmamalı."""
+    from python.eval.command_chain import CommandChain
+
+    chain = CommandChain(k=1, token_mode=True)
+    # İki ayrı oturum: birbiriyle bağlantılı olmamalı
+    chain.train_session([(0, "ls"), (1, "cd /tmp")], weight=1.0)
+    chain.train_session([(2, "ssh host"), (3, "ls")], weight=1.0)
+
+    # Birinci oturumun sonu (cd /tmp) -> ikinci oturumun başı (ssh) bağlantısı yok
+    ctx = dict(chain.table.get(("cd",), {}))
+    # "ssh" bu bağlamda görünmemeli (oturum izolasyonu)
+    assert "ssh" not in ctx, "Session isolation violated"
+
+
+def test_command_chain_token_mode():
+    """Token modunda yalnızca komut adı kullanılmalı."""
+    from python.eval.command_chain import CommandChain
+
+    chain = CommandChain(k=1, token_mode=True)
+    chain.train_session([
+        (0, "git status"),
+        (1, "git diff HEAD"),
+        (2, "git push origin main"),
+    ], weight=1.0)
+    # Bağlam "git" → sonraki "git" (token normalleştirmesi)
+    ctx = dict(chain.table.get(("git",), {}))
+    assert "git" in ctx, "Token-mode transition missing"
+
+
+def test_most_frequent_baseline():
+    """MostFrequentBaseline daima en sık komutu önerir."""
+    from python.eval.command_chain import MostFrequentBaseline
+
+    bl = MostFrequentBaseline(token_mode=True)
+    session = [(i, cmd) for i, cmd in enumerate(
+        ["ls", "ls", "ls", "cd /tmp", "cd /home"]
+    )]
+    bl.train_session(session, weight=1.0)
+    preds = bl.predict([], top_k=1)
+    assert preds[0] == "ls", f"Expected 'ls' as top prediction, got {preds[0]}"

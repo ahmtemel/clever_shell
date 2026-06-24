@@ -1,0 +1,22 @@
+=== ASAN Derleme Özeti ===
+Binary: ./minishell_asan (  190128 bytes)
+Flags:  -fsanitize=address,undefined -Wall -Wextra -Werror -g
+Build:  SUCCESS (0 warnings, 0 errors)
+
+=== ASAN Çalışma Testi (macOS UBSan) ===
+Not: macOS'ta detect_leaks=1 (LeakSanitizer) desteklenmiyor — Linux-only.
+Not: 'leaks' aracı sudo gerektirir (sandbox kısıtlaması).
+UBSan + ASan (buffer overflows, use-after-free, UB): ASAN stderr BOŞTU = 0 hata.
+
+=== Test Senaryoları ===
+1. ls -la                  -> çalıştı
+2. echo hi | cat           -> pipe çalıştı
+3. ls > /tmp/mstest.txt    -> redirect çalıştı
+4. cat /tmp/mstest.txt     -> redirect okuma çalıştı
+5. pwd                     -> builtin çalıştı
+6. exit                    -> temiz çıkış
+
+=== Sonuç ===
+ASAN UBSan hataları: 0
+LeakSanitizer: macOS'ta mevcut değil (Linux-only, bkz. man leaks)
+leaks(1): sudo gerektiriyor

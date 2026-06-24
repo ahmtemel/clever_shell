@@ -1,0 +1,4 @@
+=== macOS leaks Aracı Denemesi ===
+Hata: leaks cannot examine process (sandbox/sudo kısıtlaması)
+Not: leaks aracı MallocStackLogging=1 ile sudo ayrıcalığı gerektirir.
+Alternatif kanıt: ASAN UBSan (0 hata) + statik analiz.

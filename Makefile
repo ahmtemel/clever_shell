@@ -1,4 +1,5 @@
-NAME    = minishell
+NAME      = minishell
+ASAN_NAME = minishell_asan
 
 CC      = gcc
 CFLAGS  = -Wall -Wextra -Werror
@@ -38,11 +39,18 @@ $(OBJ_DIR)/%.o: $(SRC_DIR)/%.c | $(OBJ_DIR)
 $(OBJ_DIR):
 	mkdir -p $(OBJ_DIR)
 
+# AddressSanitizer + UBSan build (ayrı binary, 'all'ı bozmaz)
+asan: $(SRCS)
+	$(CC) -Wall -Wextra -Werror -g \
+		-fsanitize=address,undefined \
+		$(IFLAGS) $(ZMQ_CFLAGS) \
+		$(SRCS) -o $(ASAN_NAME) $(ZMQ_LDFLAGS)
+
 clean:
 	rm -rf $(OBJ_DIR)
 
 fclean: clean
-	rm -f $(NAME)
+	rm -f $(NAME) $(ASAN_NAME)
 
 re: fclean all
 
@@ -65,4 +73,4 @@ eval-cyber:
 compare:
 	python3 python/eval/compare.py
 
-.PHONY: all clean fclean re eval eval-self eval-cyber compare
+.PHONY: all clean fclean re asan eval eval-self eval-cyber compare

@@ -316,52 +316,39 @@ static void	ghost_render(t_lbuf *lb)
 ** or the daemon is way behind) and is silently discarded.
 ** Returns 1 when lb->prediction was set, 0 when discarded.
 */
-static int	adjust_prediction(t_lbuf *lb, const char *raw)
-{
-	char	full[LINE_CAP];
-	int		ls_len;
-	int		raw_len;
-	int		full_len;
-
-	ls_len   = (int)strlen(lb->last_sent);
-	raw_len  = (int)strlen(raw);
-	full_len = ls_len + raw_len;
-	if (full_len >= LINE_CAP)
-		return (0);
-	if (lb->len < ls_len || memcmp(lb->last_sent, lb->data, (size_t)ls_len) != 0)
-		return (0);
-	memcpy(full, lb->last_sent, (size_t)ls_len);
-	memcpy(full + ls_len, raw, (size_t)raw_len + 1);
-	if (full_len < lb->len || memcmp(full, lb->data, (size_t)lb->len) != 0)
-		return (0);
-	memcpy(lb->prediction, full + lb->len, (size_t)(full_len - lb->len) + 1);
-	return (1);
-}
-
 /*
-** ZMQ update: recv → validate/adjust → render → remember → send.
+** ZMQ update: drain → send → recv_timeout → render.
 **
-** Order matters:
-**   1. Receive FIRST (before updating last_sent) so that last_sent still
-**      holds the buffer of the PREVIOUS send, letting adjust_prediction
-**      correctly reconstruct the full completion.
-**   2. Update last_sent to the CURRENT buffer.
-**   3. Send the current buffer (daemon will reply on the NEXT cycle).
+** Timing fix (replaces the old recv-first / off-by-one approach):
 **
-** This eliminates the off-by-one lag: the ghost shown for buffer "gi" is
-** derived from the reply to "g" (last_sent + raw suffix = full completion),
-** adjusted to the suffix that extends "gi" – giving the correct "t status"
-** instead of the raw (mis-aligned) "it status".
+**   1. zmq_ipc_drain()            – discard every stale queued reply so the
+**                                   next recv reads the response to THIS send.
+**   2. zmq_ipc_send(lb->data)     – send the CURRENT buffer to the daemon.
+**   3. zmq_ipc_recv_timeout(15ms) – poll up to 15 ms; the Markov daemon
+**                                   replies in < 1 ms, so this virtually
+**                                   always succeeds.  The cap guarantees the
+**                                   terminal is never blocked indefinitely.
+**   4. If a reply arrived it IS the suffix for lb->data; copy it directly
+**      into lb->prediction and render the ghost text.
+**
+** Because we wait for the response to the CURRENT send there is no
+** off-by-one lag and no need for the old adjust_prediction bookkeeping.
 */
 static void	zmq_update(t_lbuf *lb)
 {
 	char	raw[LINE_CAP];
+	int		n;
 
 	lb->prediction[0] = '\0';
-	if (zmq_ipc_recv(raw, LINE_CAP) && adjust_prediction(lb, raw))
-		ghost_render(lb);
+	zmq_ipc_drain();
 	memcpy(lb->last_sent, lb->data, (size_t)lb->len + 1);
 	zmq_ipc_send(lb->data);
+	n = zmq_ipc_recv_timeout(raw, LINE_CAP, 15);
+	if (n > 0 && raw[0] != '\0' && lb->len + n < LINE_CAP)
+	{
+		memcpy(lb->prediction, raw, (size_t)n + 1);
+		ghost_render(lb);
+	}
 }
 
 /*

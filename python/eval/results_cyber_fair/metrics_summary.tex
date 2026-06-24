@@ -1,0 +1,19 @@
+\begin{table}[htbp]
+  \centering
+  \caption{Önerilen yapılandırmanın temel performans metrikleri. Kaynak: kabuk geçmişi (\texttt{Siber-güvenlik eğitim seti — filtresiz (Švábenský 2021)}, 8765 eğitim / 2192 test).}
+  \label{tab:metrics_summary}
+  \begin{tabular}{lrrrrrrrrrrr}
+    \toprule
+    Yapılandırma & KSR (\%) & Doğruluk@1 (\%) & Doğruluk@3 (\%) & Önek Doğruluğu (\%) & Önek-Koş. Tamamlama (≥2 kar.) (\%) & Top-5 Komut Kabul Oranı (\%) & Kapsama (\%) & Gecikme p50 (ms) & Gecikme p99 (ms) & Bağlam Sayısı & Bellek (KB) \\
+    \midrule
+    \textbf{Önerilen (k=3, λ=0,005)} & \textbf{47.2} & \textbf{29.0} & \textbf{54.7} & \textbf{67.7} & \textbf{68.5} & \textbf{25.3} & \textbf{94.6} & \textbf{0.141} & \textbf{0.615} & \textbf{3,325} & \textbf{1308.2} \\
+    k=1 (tekli bağlam) & 47.1 & 28.4 & 55.0 & 67.6 & 68.5 & 25.5 & 94.6 & 0.139 & 0.575 & 935 & 454.4 \\
+    k=2 (ikili bağlam) & 47.2 & 29.0 & 54.6 & 67.7 & 68.5 & 25.3 & 94.6 & 0.139 & 0.599 & 2,321 & 924.1 \\
+    Geri alma yok (k=3) & 46.9 & 27.6 & 54.7 & 67.7 & 68.5 & 25.3 & 93.1 & 0.139 & 0.580 & 3,325 & 1308.2 \\
+    λ=0 (azalma yok) & 44.9 & 27.9 & 49.7 & 65.2 & 66.9 & 22.4 & 94.6 & 0.141 & 0.621 & 3,325 & 1308.2 \\
+    λ=0,02 (hızlı azalma) & 48.1 & 29.1 & 54.4 & 69.1 & 70.1 & 25.1 & 94.6 & 0.140 & 0.585 & 3,325 & 1308.2 \\
+    Yalnızca frekans & 45.1 & 16.9 & 54.7 & 67.7 & 68.5 & 25.3 & 94.6 & 0.145 & 0.615 & 3,325 & 1308.2 \\
+    En sık komut & 24.5 & 16.8 &  & 25.7 & 24.3 &  & 74.5 & 0.228 & 0.358 & 0 & 0.1 \\
+    \bottomrule
+  \end{tabular}
+\end{table}

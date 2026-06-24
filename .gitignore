@@ -29,3 +29,5 @@ minishell_asan
 
 # Third-party dataset (see Zenodo DOI 10.5281/zenodo.5517479)
 data/
+python/eval/data/self_history_frozen.txt
+python/eval/data/cyber_history.txt
