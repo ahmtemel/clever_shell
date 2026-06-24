@@ -5,19 +5,30 @@ clever_shell – Phase 6: Markov Prediction Daemon
 
 Listens on ipc:///tmp/markov_shell.ipc (ZeroMQ PAIR, server/bind side).
 Receives the current input buffer from the C shell and replies with the
-predicted completion SUFFIX using a k=5 (5-gram) character-level Markov
-chain trained on ~/.zsh_history.
+predicted completion SUFFIX using a word-level k=3 (trigram) Markov chain
+trained on ~/.zsh_history.
 
-Design constraints:
-  • NO LLM / Transformer.  O(1) lookup via defaultdict / Counter.
-  • CONTEXT_LEN=5 with automatic backoff to 4, 3, 2, 1, then silent.
-  • Line-isolated training: no n-gram ever crosses a command boundary,
-    so "git status" and "git config" can never be blended together.
-  • Prediction hard-stops at the first predicted '\n' or string-end.
-  • Preprocessing: strip zsh extended-history timestamps, deduplicate
-    runaway repeated commands, collapse extra whitespace, preserve order.
-  • CPU-friendly: zmq.Poller with POLL_TIMEOUT instead of busy-loop.
-  • Always sends back a string (may be ""), never raises to the C client.
+Filtering Pipeline (ALL at TRAINING-TIME – inference stays < 5 ms)
+-------------------------------------------------------------------
+  Layer 1 · Syntactic whitelist + validation  (is_valid_command)
+            - shlex.split must succeed (balanced quotes),
+            - line must not match the noise regex (URL, exit:?, ANSI, '$'),
+            - first token must be in WHITELIST.
+  Layer 2 · Recency weighting                 (WordMarkovChain.train_entries)
+            - weight = exp(-RECENCY_DECAY · Δdays) ≈ 1.0 for new commands,
+              fading for old ones.  Half-life ≈ 139 days (λ=0.005).
+  Layer 3 · Min-count frequency floor         (apply_frequency_floor)
+            - command lines appearing fewer than MIN_CMD_FREQ times are dropped.
+
+Model design:
+  • Word-level trigram (k=3 tokens); table key = Tuple[str,...].
+  • All context lengths 0 ≤ n ≤ k stored → backoff always finds a level.
+  • LINE-ISOLATED training: no n-gram ever crosses a command boundary.
+  • predict_suffix() handles two modes:
+      space-or-empty  → predict the next full word,
+      mid-word        → complete the current partial token (prefix mode).
+  • Fallback: prefix-match against trained command strings by frequency.
+  • ZeroMQ PAIR socket protocol is unchanged (C client untouched).
 
 Usage:
     python3 python/markov_daemon.py [history_file]
@@ -28,222 +39,397 @@ Usage:
 
 from __future__ import annotations
 
+import heapq
+import math
 import os
 import re
+import shlex
 import sys
 import time
 from collections import Counter, defaultdict
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 import zmq
 
 
 # ── Configuration ─────────────────────────────────────────────────────────────
 
-CONTEXT_LEN    = 5     # 5-gram context: wide enough to distinguish "git clone"
-                       # from "git config" without blending them
-MAX_PRED_LEN   = 50    # max suffix characters generated per request
-MAX_CONSEC_DUP = 5     # runaway-repeat cap (e.g. thousands of "ls")
-ZMQ_ADDR       = "ipc:///tmp/markov_shell.ipc"
-POLL_TIMEOUT   = 100   # ms – zmq.Poller block; keeps CPU idle between keystrokes
+CONTEXT_LEN   = 3      # word-level trigram (k=3 tokens)
+MAX_PRED_LEN  = 60     # hard cap on returned suffix characters
+PRED_TOPK     = 5      # heapq.nlargest candidates pulled per lookup
+RECENCY_DECAY = 0.005  # λ in w=exp(-λ·Δdays); half-life ≈ 139 days
+MIN_CMD_FREQ  = 1      # Layer-3 floor: single-occurrence commands are kept
+ZMQ_ADDR      = "ipc:///tmp/markov_shell.ipc"
+POLL_TIMEOUT  = 100    # ms – zmq.Poller block; keeps CPU idle between keystrokes
 
 
-# ── Markov model ──────────────────────────────────────────────────────────────
-
-class MarkovChain:
-    """
-    Character-level k-gram Markov chain with backoff and line isolation.
-
-    Key design choices:
-      • table[context_str] = Counter({next_char: frequency})
-      • All n-gram lengths 1 ≤ n ≤ k are stored so backoff always works.
-      • Training is LINE-ISOLATED: no n-gram ever spans a '\n' boundary.
-        This prevents "git status\ngit config" from teaching the model
-        that "git status" leads to "git config".
-      • Prediction hard-stops at the first '\n' (command boundary).
-    """
-
-    def __init__(self, k: int = CONTEXT_LEN) -> None:
-        self.k = k
-        self.table: Dict[str, Counter] = defaultdict(Counter)
-
-    # ── Training ──────────────────────────────────────────────────────────
-
-    def _train_line(self, line: str) -> None:
-        """
-        Train on a single command line.
-        Records all n-gram prefixes (1 ≤ n ≤ k) ending at each position
-        and the character that follows – strictly within this line only.
-        """
-        length = len(line)
-        for i in range(length - 1):
-            next_ch = line[i + 1]
-            start   = max(0, i - self.k + 1)
-            for j in range(start, i + 1):
-                ctx = line[j: i + 1]
-                self.table[ctx][next_ch] += 1
-
-    def train(self, text: str) -> None:
-        """
-        Feed the training corpus into the model in LINE-ISOLATED mode.
-
-        The corpus is split on '\n' and each command line is trained
-        independently via _train_line().  This guarantees that no n-gram
-        crosses a command boundary, eliminating inter-command contamination
-        (e.g. "git status" never bleeds into "git config" predictions).
-        """
-        for line in text.split("\n"):
-            line = line.strip()
-            if line:
-                self._train_line(line)
-
-    # ── Prediction ────────────────────────────────────────────────────────
-
-    def _next_char(self, context: str) -> Optional[str]:
-        """
-        Predict the single most-likely next character.
-        Tries contexts of length k, k-1, …, 1 (backoff).
-        Returns None when no data exists at any level → stay silent.
-        """
-        for n in range(self.k, 0, -1):
-            ctx = context[-n:]
-            if ctx and ctx in self.table:
-                return self.table[ctx].most_common(1)[0][0]
-        return None
-
-    def predict_suffix(self, buf: str) -> str:
-        """
-        Generate the predicted completion SUFFIX for the current buffer.
-
-        Hard stops (in priority order):
-          1. '\n' predicted → command boundary reached, stop immediately.
-          2. MAX_PRED_LEN characters generated → cap enforced.
-          3. Model returns None → backoff exhausted, stay silent.
-          4. Same context key seen twice → loop guard, stop.
-
-        Because training is line-isolated, the model never learned to
-        predict cross-command transitions, so condition 1 is triggered
-        naturally at the end of a command pattern.
-        """
-        if not buf:
-            return ""
-
-        result:  List[str] = []
-        current: str       = buf
-        seen:    set[str]  = set()
-
-        for _ in range(MAX_PRED_LEN):
-            key = current[-(self.k + 1):]
-            if key in seen:
-                break
-            seen.add(key)
-
-            ch = self._next_char(current)
-            # Hard boundary: '\n' = end of command → stop, never cross it
-            if ch is None or ch == "\n":
-                break
-
-            result.append(ch)
-            current = current + ch
-
-        return "".join(result)
+# ── Layer 1: syntactic whitelist ───────────────────────────────────────────────
+# Only lines whose first token is one of these are trained.
+# "./" marks local-script invocations (checked separately via startswith).
+WHITELIST: frozenset[str] = frozenset({
+    "git", "ls", "cd", "python", "python3", "make", "gcc",
+    "cat", "ssh", "brew", "touch", "clear",
+    "vim", "nvim", "nano",
+    "grep", "find", "sed", "awk",
+    "curl", "wget",
+    "tar", "zip", "unzip",
+    "docker", "npm", "node",
+    "cargo", "rustc", "go", "ruby",
+    "pip", "pip3",
+    "chmod", "chown",
+    "mv", "cp", "rm", "mkdir", "rmdir",
+    "echo", "printf", "source", "export", "alias",
+    "./",
+})
 
 
-# ── Preprocessing ─────────────────────────────────────────────────────────────
+# ── ZSH history parsing ────────────────────────────────────────────────────────
 
-# Zsh extended_history format: ": <timestamp>:<elapsed>;<command>"
-# Example: ": 1700000000:0;git status"
-_ZSH_EXT_RE  = re.compile(r"^: \d+:\d+;")
-
-# Bash HISTTIMEFORMAT standalone timestamp lines: "#<unix-epoch>"
-_BASH_TS_RE  = re.compile(r"^#\d+$")
-
-# Collapse internal multi-space runs (normalises indented/copy-pasted cmds)
+# Zsh extended_history: ": <epoch>:<elapsed>;<command>"
+_ZSH_LINE_RE = re.compile(r"^: (\d+):\d+;(.+)$")
 _MULTI_SP    = re.compile(r" {2,}")
 
 
-def _extract_command(raw_line: str) -> str:
+def parse_zsh_history(path: str) -> List[Tuple[Optional[int], str]]:
     """
-    Extract the bare command from a raw history line, handling both:
-      • Zsh extended format : ": 1700000000:0;git status"  → "git status"
-      • Bash timestamp line : "#1700000000"               → "" (skipped)
-      • Plain line          : "git status"                → "git status"
-    """
-    line = raw_line.strip()
-    if not line:
-        return ""
-    # Bash standalone timestamp → discard
-    if _BASH_TS_RE.match(line):
-        return ""
-    # Zsh extended history → strip ": ts:elapsed;" prefix
-    m = _ZSH_EXT_RE.match(line)
-    if m:
-        line = line[m.end():].strip()
-    # Collapse multiple spaces introduced by indentation or copy-paste
-    return _MULTI_SP.sub(" ", line)
+    Parse a zsh history file into [(timestamp, command), ...].
 
+    • Extended-history lines yield an int timestamp and the bare command.
+    • Plain lines (no timestamp) yield None and the line as-is.
+    • Standalone "#<epoch>" and blank lines are skipped.
 
-def load_history(path: str) -> str:
+    Timestamps are preserved so Layer-2 recency weighting can use them.
     """
-    Load a zsh (or bash) history file, clean it, and return a training corpus.
-
-    Cleaning steps (in order):
-      1. Extract the bare command from each line:
-           • Zsh extended: strip ": <ts>:<elapsed>;" prefix.
-           • Bash HISTTIMEFORMAT: skip standalone "#<epoch>" lines.
-           • Plain: use as-is.
-      2. Strip leading/trailing whitespace; skip blank results.
-      3. Collapse internal multi-space runs to a single space.
-      4. Cap consecutive identical commands at MAX_CONSEC_DUP to
-         prevent a "ls × 10 000" from dominating the model.
-         Sequential ordering of distinct commands is fully preserved.
-      5. Join surviving commands with '\n'; train() will split on '\n'
-         and process each command in isolation (no cross-boundary n-grams).
-    """
+    entries: List[Tuple[Optional[int], str]] = []
     if not os.path.isfile(path):
         print(f"[markov_daemon] warning: {path} not found – cold start",
               flush=True)
-        return ""
+        return entries
 
     try:
         with open(path, encoding="utf-8", errors="replace") as fh:
             raw_lines = fh.readlines()
     except OSError as exc:
         print(f"[markov_daemon] warning: cannot read {path}: {exc}", flush=True)
-        return ""
-
-    filtered:   List[str] = []
-    prev_line:  str       = ""
-    consec_cnt: int       = 0
+        return entries
 
     for raw in raw_lines:
-        line = _extract_command(raw)
-        if not line:
-            continue
-
-        if line == prev_line:
-            consec_cnt += 1
-            if consec_cnt >= MAX_CONSEC_DUP:
-                continue                 # skip excess duplicates
+        raw = raw.rstrip("\n")
+        m = _ZSH_LINE_RE.match(raw)
+        if m:
+            ts:  Optional[int] = int(m.group(1))
+            cmd: str           = m.group(2).strip()
         else:
-            consec_cnt = 0
-            prev_line  = line
+            line = raw.strip()
+            if not line or line.startswith("#"):
+                continue
+            ts, cmd = None, line
 
-        filtered.append(line)
+        cmd = _MULTI_SP.sub(" ", cmd)
+        if cmd:
+            entries.append((ts, cmd))
 
-    corpus = "\n".join(filtered)
-    if corpus:
-        corpus += "\n"
-    return corpus
+    return entries
+
+
+# ── Layer 1: command validation ────────────────────────────────────────────────
+
+_NOISE_RE = re.compile(
+    r"""(
+        https?://              |   # http / https URLs
+        ftp://                 |   # ftp URLs
+        www\.                  |   # bare www. hosts
+        \x1b\[[0-9;]*[A-Za-z]  |   # ANSI escape sequences
+        \bexit\b:?             |   # exit  /  exit:
+        \$                         # variable interpolation / subshell
+    )""",
+    re.VERBOSE | re.IGNORECASE,
+)
+
+
+def is_valid_command(cmd: str) -> bool:
+    """
+    Layer-1 gate. Return True only if cmd is a clean, learnable command.
+
+    Rejection criteria (training-time only; inference never calls this):
+      1. Matches the noise regex (URL, exit/exit:, ANSI codes, '$').
+      2. shlex cannot tokenise it (unbalanced quotes → broken paste).
+      3. First token is not in WHITELIST (unknown binary / env-var assignment).
+         Exception: tokens starting with "./" are always allowed.
+    """
+    if not cmd:
+        return False
+
+    if _NOISE_RE.search(cmd):
+        return False
+
+    try:
+        tokens = shlex.split(cmd, posix=False)
+    except ValueError:
+        return False
+    if not tokens:
+        return False
+
+    first = tokens[0]
+    if first.startswith("./"):
+        return True
+    return os.path.basename(first) in WHITELIST
+
+
+# ── Layer 3: min-count frequency floor ────────────────────────────────────────
+
+def apply_frequency_floor(
+    entries: List[Tuple[Optional[int], str]],
+    min_freq: int = MIN_CMD_FREQ,
+) -> List[Tuple[Optional[int], str]]:
+    """
+    Drop command lines whose total occurrence count is below min_freq.
+
+    A Counter over full command strings gives O(1) lookups.  With
+    MIN_CMD_FREQ=1 all entries pass; raising it filters one-off outliers.
+    """
+    counts = Counter(cmd for _, cmd in entries)
+    return [(ts, cmd) for ts, cmd in entries if counts[cmd] >= min_freq]
+
+
+# ── Word-level Markov model ────────────────────────────────────────────────────
+
+class WordMarkovChain:
+    """
+    Word-level k-gram Markov chain with backoff, line isolation, and fallback.
+
+    Design:
+      • table[Tuple[str,...]] = Counter({next_word: weight})
+        Key = last k word tokens as a tuple; value = weighted next-word counts.
+      • All context lengths 0 ≤ n ≤ k are stored so backoff always works.
+        The empty-tuple key () accumulates all words (universal fallback level).
+      • Training is LINE-ISOLATED: no n-gram ever spans a command boundary.
+      • Recency weighting: weight = exp(-RECENCY_DECAY * delta_days).
+      • Fallback: prefix-match against trained command strings by raw frequency.
+      • Inference: dict lookup + heapq.nlargest → well under 1 ms per call.
+    """
+
+    def __init__(self, k: int = CONTEXT_LEN) -> None:
+        self.k = k
+        self.table: Dict[Tuple[str, ...], Counter] = defaultdict(Counter)
+        # Stores raw occurrence counts of each full command string for fallback.
+        self.fallback_counter: Counter = Counter()
+
+    # ── Training ──────────────────────────────────────────────────────────
+
+    def _learn_line(self, tokens: List[str], weight: float = 1.0) -> None:
+        """
+        Record all word n-gram transitions within a single tokenized line.
+
+        For word at index i, records every context of length 0..min(k,i)
+        immediately preceding it, adding weight to each counter entry.
+        The empty-tuple context () captures the universal distribution.
+        Strictly line-isolated: no context ever crosses a command boundary.
+        """
+        for i, next_word in enumerate(tokens):
+            max_ctx = min(self.k, i)
+            for ctx_len in range(max_ctx + 1):
+                ctx = tuple(tokens[i - ctx_len: i]) if ctx_len > 0 else ()
+                self.table[ctx][next_word] += weight
+
+    def train_entries(
+        self,
+        entries: List[Tuple[Optional[int], str]],
+        now: Optional[float] = None,
+    ) -> None:
+        """
+        Layer-2 recency-weighted training (resets the matrix first).
+
+        Each entry's weight = exp(-RECENCY_DECAY * Δdays) where
+        Δdays = max(0, (now - timestamp) / 86400).  Entries without a
+        timestamp default to weight 1.0.  The fallback_counter is
+        populated with raw integer counts (unweighted) for prefix matching.
+        """
+        self.table.clear()
+        self.fallback_counter.clear()
+        if now is None:
+            now = time.time()
+
+        for ts, cmd in entries:
+            try:
+                tokens = shlex.split(cmd, posix=False)
+            except ValueError:
+                continue
+            if not tokens:
+                continue
+
+            if ts is None:
+                weight = 1.0
+            else:
+                delta_days = max(0.0, (now - ts) / 86400.0)
+                weight = math.exp(-RECENCY_DECAY * delta_days)
+
+            if weight > 0.0:
+                self._learn_line(tokens, weight)
+            self.fallback_counter[cmd] += 1
+
+    def train(self, text: str) -> None:
+        """
+        Uniform-weight training from a '\n'-joined corpus string.
+        Used for tests and cold corpora that carry no timestamps.
+        Resets the matrix before training.
+        """
+        self.table.clear()
+        self.fallback_counter.clear()
+        for line in text.split("\n"):
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                tokens = shlex.split(line, posix=False)
+            except ValueError:
+                continue
+            if tokens:
+                self._learn_line(tokens, 1.0)
+                self.fallback_counter[line] += 1
+
+    # ── Prediction (hot path – keep it cheap) ─────────────────────────────
+
+    def _predict_next(self, ctx_tokens: Tuple[str, ...]) -> Optional[str]:
+        """
+        Return the highest-weight next word for the given context.
+        Backs off from len(ctx_tokens) down to 0 (empty = universal dist.).
+        O(PRED_TOPK) via heapq.nlargest on a small Counter.
+        """
+        start = min(self.k, len(ctx_tokens))
+        for n in range(start, -1, -1):
+            ctx     = ctx_tokens[-n:] if n > 0 else ()
+            counter = self.table.get(ctx)
+            if counter:
+                top = heapq.nlargest(PRED_TOPK, counter.items(),
+                                     key=lambda kv: kv[1])
+                return top[0][0]
+        return None
+
+    def _fallback(self, buf: str) -> str:
+        """
+        Prefix-match buf.strip() against all trained commands by frequency.
+        Returns the remaining suffix of the best matching command, or "".
+        """
+        strip = buf.strip()
+        if not strip:
+            return ""
+        best_cmd: Optional[str] = None
+        best_cnt: int           = 0
+        for cmd, cnt in self.fallback_counter.items():
+            if cmd.startswith(strip) and cmd != strip and cnt > best_cnt:
+                best_cmd = cmd
+                best_cnt = cnt
+        if best_cmd:
+            suffix = best_cmd[len(strip):]
+            if len(suffix) >= 1:
+                return suffix[:MAX_PRED_LEN]
+        return ""
+
+    def predict_suffix(self, buf: str) -> str:
+        """
+        Generate the predicted completion SUFFIX for the current buffer.
+
+        a. Tokenize buf with shlex.split(posix=False); return "" on ValueError.
+
+        b. buf ends with a space OR is blank (new-word boundary):
+             Context = last min(k, len(tokens)) tokens as a tuple.
+             Call _predict_next() with backoff; return the predicted word.
+
+        c. buf does NOT end with a space (mid-word):
+             prefix     = tokens[-1]  (the partial word being typed)
+             ctx_tokens = tokens[:-1]
+             Back off from min(k, len(ctx)) down to 0, filtering candidates
+             with candidate.startswith(prefix).  Return candidate[len(prefix):]
+             (only the missing suffix, not the part already typed).
+
+        d. Hard cap: returned string is at most MAX_PRED_LEN characters.
+        e. Never returns a string shorter than 1 character (returns "" instead).
+
+        Falls back to _fallback() when the model is silent at every level.
+        """
+        MIN_LEN = 1
+
+        # a. Tokenize
+        try:
+            tokens: List[str] = shlex.split(buf, posix=False)
+        except ValueError:
+            return ""
+
+        # b. New-word boundary (buf empty or ends with space)
+        if not buf.strip() or buf.endswith(" "):
+            ctx  = tuple(tokens[-min(self.k, len(tokens)):]) if tokens else ()
+            word = self._predict_next(ctx)
+            if word and len(word) >= MIN_LEN:
+                return word[:MAX_PRED_LEN]
+            return self._fallback(buf)
+
+        # c. Mid-word: complete the partial token
+        if not tokens:
+            return self._fallback(buf)
+
+        prefix     = tokens[-1]
+        ctx_tokens = tuple(tokens[:-1])
+        start      = min(self.k, len(ctx_tokens))
+
+        for n in range(start, -1, -1):
+            ctx     = ctx_tokens[-n:] if n > 0 else ()
+            counter = self.table.get(ctx)
+            if not counter:
+                continue
+            candidates = [
+                (w, c) for w, c in counter.items()
+                if w.startswith(prefix) and w != prefix
+            ]
+            if candidates:
+                best_word = max(candidates, key=lambda x: x[1])[0]
+                suffix    = best_word[len(prefix):]
+                if len(suffix) >= MIN_LEN:
+                    return suffix[:MAX_PRED_LEN]
+
+        return self._fallback(buf)
+
+
+# ── Training pipeline orchestrator ────────────────────────────────────────────
+
+def build_chain(
+    path: str,
+    k: int = CONTEXT_LEN,
+    now: Optional[float] = None,
+) -> Tuple[WordMarkovChain, Dict[str, int]]:
+    """
+    Run the full 3-layer training pipeline and return (chain, stats).
+
+    Pipeline:
+        parse_zsh_history  →  is_valid_command (Layer 1)
+                           →  apply_frequency_floor (Layer 3)
+                           →  WordMarkovChain.train_entries (Layer 2 weighting)
+
+    stats keys: parsed, validated, floored, contexts.
+    """
+    entries = parse_zsh_history(path)
+    valid   = [(ts, cmd) for ts, cmd in entries if is_valid_command(cmd)]
+    floored = apply_frequency_floor(valid)
+
+    chain = WordMarkovChain(k=k)
+    chain.train_entries(floored, now=now)
+
+    stats = {
+        "parsed":    len(entries),
+        "validated": len(valid),
+        "floored":   len(floored),
+        "contexts":  len(chain.table),
+    }
+    return chain, stats
 
 
 # ── ZMQ daemon loop ───────────────────────────────────────────────────────────
 
-def run_daemon(chain: MarkovChain) -> None:
+def run_daemon(chain: WordMarkovChain) -> None:
     """
     Bind the ZMQ PAIR socket and serve prediction requests.
 
-    Protocol:
+    Protocol (unchanged – C client untouched):
       C → Python : current input buffer (UTF-8 string, may be empty)
       Python → C : predicted suffix    (UTF-8 string, may be empty)
 
@@ -299,18 +485,18 @@ def main() -> None:
     )
 
     print(f"[markov_daemon] loading {history_path} …", flush=True)
-    corpus     = load_history(history_path)
-    line_count = corpus.count("\n") if corpus else 0
-    print(f"[markov_daemon] {line_count} commands after preprocessing",
-          flush=True)
-
-    chain = MarkovChain(k=CONTEXT_LEN)
-    t0    = time.monotonic()
-    chain.train(corpus)
+    t0 = time.monotonic()
+    chain, stats = build_chain(history_path, k=CONTEXT_LEN)
     elapsed = time.monotonic() - t0
+
     print(
-        f"[markov_daemon] trained in {elapsed:.3f}s  "
-        f"| {len(chain.table):,} unique n-gram contexts",
+        f"[markov_daemon] pipeline: parsed={stats['parsed']} "
+        f"→ valid={stats['validated']} → floored={stats['floored']}",
+        flush=True,
+    )
+    print(
+        f"[markov_daemon] trained in {elapsed:.3f}s "
+        f"| {stats['contexts']:,} unique n-gram contexts",
         flush=True,
     )
 

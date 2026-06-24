@@ -17,3 +17,15 @@ minishell_stub
 out*
 io_test
 count.txt
+
+# Binaries
+minishell
+minishell_asan
+
+# Python
+**/__pycache__/
+*.pyc
+.pytest_cache/
+
+# Third-party dataset (see Zenodo DOI 10.5281/zenodo.5517479)
+data/

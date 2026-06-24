@@ -46,4 +46,23 @@ fclean: clean
 
 re: fclean all
 
-.PHONY: all clean fclean re
+eval:
+	python3 -m python.eval.run_eval
+
+eval-self:
+	python3 -m python.eval.run_eval \
+		--history ~/.zsh_history \
+		--out-dir python/eval/results_self \
+		--label "Kendi kabuk geçmişim"
+
+eval-cyber:
+	python3 python/eval/convert_cyber.py && \
+	python3 -m python.eval.run_eval \
+		--history python/eval/data/cyber_history.txt \
+		--out-dir python/eval/results_cyber \
+		--label "Siber-güvenlik eğitim seti (Švábenský 2021)"
+
+compare:
+	python3 python/eval/compare.py
+
+.PHONY: all clean fclean re eval eval-self eval-cyber compare
