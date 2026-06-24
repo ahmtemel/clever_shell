@@ -1,0 +1,205 @@
+# .cursorrules - Yapay Zeka Destekli Akilli Terminal (clever_shell)
+
+> Bu dosya, otonom kodlama ajaninin (Cursor Agent) bu proje uzerinde
+> calisirken uymak ZORUNDA oldugu mimari kararlari, kisitlamalari ve
+> sozlesmeleri tanimlar. Her aksiyondan once bu kurallar gozden gecirilmelidir.
+
+---
+
+## 0. Proje Misyonu
+
+Kullanici aliskanliklarini ogrenen ve anlik komut tahminleri (Ghost Text)
+sunan, POSIX uyumlu, dusuk seviyeli (low-level) bir terminal kabugu (shell)
+gelistiriyoruz. Sistem iki bagimsiz surecten olusur:
+
+1. **C Cekirdegi**: 42 Okullari "minishell" standartlarinda, dusuk seviyeli
+   terminal kontrolu yapan, kullanici girisini isleyen ve komutlari yuruten
+   ana surec.
+2. **Python Yapay Zeka Motoru**: Arka planda calisan, k-inci dereceden Markov
+   zinciri ile karakter/kelime tahmini yapan asenkron daemon.
+
+Bu iki surec **ZeroMQ** uzerinden, broker'siz (brokerless) ve engelleyici
+olmayan (non-blocking) bir IPC katmaniyla haberlesir.
+
+---
+
+## 1. Genel Calisma Ilkeleri
+
+- **Asama asama (incremental) gelistirme**: Proje tek seferde uretilmez.
+  Belgedeki 6 asamali yol haritasi (bkz. Bolum 9) sirayla takip edilir.
+- **Her modulden sonra derle**: Bir modul tamamlandiginda mutlaka `make`
+  calistirilarak kod derlenir; gerekirse calistirilarak test edilir.
+- **Acik onay olmadan asama atlama**: Bir sonraki asamaya gecmeden once
+  mevcut asamanin derlenip dogrulandigindan emin ol.
+- **Minimal ve modul, gereksiz dosya uretme**: Sadece o asamanin gerektirdigi
+  dosyalar olusturulur.
+
+---
+
+## 2. Dizin Yapisi Sozlesmesi
+
+```
+clever_shell/
+├── inc/     # .h baslik (header) dosyalari
+├── src/     # .c kaynak dosyalari
+├── obj/     # derleme ciktilari (.o) - git tarafindan dislanir
+└── Makefile # (Asama 1'de olusturulur)
+```
+
+- Kaynak (`.c`) dosyalari YALNIZCA `src/` altinda yer alir.
+- Baslik (`.h`) dosyalari YALNIZCA `inc/` altinda yer alir; derlemede `-Iinc`.
+- Tum `.o` ciktilari `obj/` altina yazilir; bu klasor versiyon kontrolune
+  girmez (`.gitignore` `*.o` zaten disliyor).
+- Python AI daemon'u ileride (Asama 6) `python/` klasorune eklenir.
+
+---
+
+## 3. C Dili ve Derleme Kurallari
+
+- Derleyici: `gcc` (veya `cc`).
+- **Zorunlu bayraklar**: `-Wall -Wextra -Werror`. Uyari = hata. Kod uyarisiz
+  derlenmelidir.
+- Standart: C kutuphanesi disinda harici bagimlilik yok (ZeroMQ haric, Asama 4).
+- Makefile modulerdir: `all`, `clean`, `fclean`, `re` kurallarini icerir;
+  `.o` dosyalarini `obj/` altina derler; basliklar icin `-Iinc` kullanir.
+
+---
+
+## 4. Bellek ve Kaynak Guvenligi (KRITIK)
+
+- **Sifir memory leak**: Her `malloc`/`calloc` icin donus degeri kontrol
+  edilir; basarisizlikta guvenli sekilde temizlenip cikilir.
+- Ayrilan her bellek blogu sahiplik (ownership) net olacak sekilde, dongunun
+  her iterasyonunda ve hata yollarinda `free` edilir.
+- **Dosya tanimlayici (fd) sizintisi yasaktir**: Acilan her `pipe`/`open`/`dup2`
+  fd'si, her `fork` sonrasinda gereksiz uclarda `close()` edilir.
+  "Too many open files" hatasi olusmamalidir.
+- Globaller minimumda tutulur; sinyal handler'lari disinda global state'ten
+  kacin.
+
+---
+
+## 5. Shell Mimarisi: Dort Modul
+
+Veri akisi: ham metin -> Lexer -> Parser -> Expander -> Executor.
+
+1. **Lexer (Sozcuksel Analizci)**: Ham satiri tokenlara ayirir
+   (`WORD`, `PIPE`, `REDIRECT_IN <`, `REDIRECT_OUT >`, `HEREDOC <<`,
+   `APPEND >>`). Cikti: dogrusal bagli liste (linked list).
+2. **Parser (Sozdizimsel Analizci)**: Token listesini Soyut Sozdizimi Agacina
+   (AST - Abstract Syntax Tree) cevirir. **Pipe'lar (`|`) agacta kok dugum
+   (root) olur**; sol dal veriyi ureten, sag dal veriyi tuketen komuttur.
+3. **Expander (Genisletici)**: AST uzerinde `$` ile baslayan ortam
+   degiskenlerini gercek degerleriyle degistirir (`$USER` -> kullanici adi,
+   `$?` -> onceki komutun exit kodu).
+4. **Executor (Yurutucu)**: AST'yi ozyinelemeli (recursive) gezerek komutlari
+   `fork()`, `execve()`, `pipe()`, `dup2()`, `waitpid()` ile yurutur.
+
+---
+
+## 6. Sistem Cagrilari ve Surec Yonetimi
+
+- Surec olusturma: `fork()` + `execve()`. Cocuk surec ikiliyi
+  (`/usr/bin/ls` vb.) kendi adres alanina yukler.
+- Boru hatti (pipe): `pipe()` ile cekirdek belleginde anonim hat;
+  ureticinin STDOUT'u `dup2()` ile yazma ucuna, tuketicinin STDIN'i okuma
+  ucuna baglanir.
+- Senkronizasyon: Tum cocuk surecler `waitpid()` ile beklenir; aksi halde
+  `cat`/`grep` gibi STDIN bekleyen bloklayici komutlar kabugu kilitler.
+- **fd hijyeni**: Her `fork` sonrasi kullanilmayan fd'ler `close()` edilir.
+
+---
+
+## 7. Uc Durumlar (Edge Cases) ve Sinyaller
+
+- Kapatilmamis tirnak (tek `'` veya cift `"`) -> Lexer asamasinda
+  **syntax error** firlatilir; yurutmeye gecilmez.
+- Argumansiz bloklayici komutlar (`cat`, `grep`) kabugu kilitlememeli;
+  `waitpid()` ile dogru senkronize edilmeli.
+- Sinyal yonetimi `sigaction` ile yapilir (`<signal.h>`):
+  - **SIGINT (Ctrl+C)**: Kabuk KAPANMAZ; yalnizca aktif cocuk surec
+    sonlandirilir ve yeni bir prompt (komut istemi) acilir.
+  - **SIGQUIT (Ctrl+\)**: Interaktif promptta yok sayilir; cocuk surecte
+    standart davranis.
+- Her dongu iterasyonunda bellek ve surec durumu kontrol altinda tutulur.
+
+---
+
+## 8. Dusuk Seviyeli Terminal Kontrolu (termios)
+
+- `readline` yerine terminal **Raw / Non-Canonical** moda alinir
+  (`<termios.h>`).
+- Mevcut ayarlar `tcgetattr(STDIN_FILENO, &orig)` ile YEDEKLENIR ve cikista
+  geri yuklenir.
+- Mod: `raw.c_lflag &= ~(ECHO | ICANON);` (satir tamponu ve otomatik yanki
+  kapali). `c_cc[VMIN] = 1`, `c_cc[VTIME] = 0` (tek karakter gelene kadar
+  blok, ama aninda yanit).
+- `tcsetattr` ile devreye alinir.
+- ECHO kapali oldugundan, basilan her karakteri ekrana basmak PROGRAMIN
+  sorumlulugundadir (`write`).
+- **Backspace** (`0x7f` veya `\b`): Programin kendi tamponundan son karakter
+  silinir; ekranda `write(1, "\b \b", 3)` ile gorsel silme yapilir.
+- **Yon tuslari / Escape sequence**: `\x1b[A/B/C/D` gibi cok baytli diziler
+  ayristirilir (parse edilir).
+
+### Ghost Text ve ANSI Kodlari
+
+- Tahmin metni soluk gri yazilir: `\x1b[90m` ... `\x1b[0m`.
+- Gri tahmin yazildiktan sonra imlec, kullanicinin yazdigi GERCEK metnin
+  sagina geri cekilir: `\x1b[ND` (N = geri cekilecek birim sayisi, hesaplanir).
+- **Tab (`0x09`)**: Tahmin kabul edilir; gri metin normal renge cevrilir,
+  ana komut tamponuna kalici yazilir, imlec sona tasinir.
+
+---
+
+## 9. ZeroMQ IPC Stratejisi (KRITIK)
+
+- Adres: `ipc:///tmp/markov_shell.ipc` (Unix-domain soket; TCP/IP DEGIL).
+- C tarafi: `libzmq` / `czmq`. Python tarafi: `pyzmq`.
+- **Desen**: `PAIR` veya asenkron `PUSH/PULL`. **REQ/REP (senkron, soket
+  kilitleyen) KULLANILMAZ.**
+- **Terminal dongusu ASLA bloklanmaz**:
+  - `zmq_send(...)` her zaman `ZMQ_DONTWAIT` (eski adi `ZMQ_NOBLOCK`) ile.
+  - `zmq_recv(...)` her zaman `ZMQ_DONTWAIT` ile. Mesaj yoksa `EAGAIN`
+    donulur; bu hata YAKALANIR, YOK SAYILIR ve donguye devam edilir.
+  - Alternatif (CPU dostu): `zmq_poll(..., timeout=0)` ile anlik kontrol.
+- Makefile, Asama 4'te ZeroMQ baglama (`-lzmq` vb.) icin guncellenir.
+
+---
+
+## 10. Python Yapay Zeka Motoru (Markov Daemon)
+
+- **LLM / Transformer KULLANILMAZ**. Gerekce: terminal her tus vurusuna
+  mikrosaniye mertebesinde yanit vermek zorundadir; derin ogrenme modelleri
+  bu gecikme limitlerini karsilayamaz.
+- Model: **3. dereceden (k=3) Markov Zinciri**.
+- Veri yapisi: `collections.defaultdict` / `collections.Counter` ile O(1)
+  gecis (transition) matrisi. Anahtar = son k karakter (tuple/string),
+  deger = sonraki karakter frekanslari.
+- **Preprocessing**: `.bash_history` yuklenirken regex ile bastaki zaman
+  damgalari (timestamps) temizlenir, noktalama standartlastirilir, tekrar
+  eden sonsuz donguler (orn. binlerce `ls`) filtrelenir. Ardisik dizilim
+  bozulmaz.
+- **Backoff**: Dizi veri setinde hic gorulmemisse (sifir frekans) model
+  `k-1` dereceli alt modele duser; o da yoksa SESSIZ kalir (tahmin gondermez,
+  asla cokmez).
+- Soket non-blocking modda tutulur veya `zmq.poll` ile CPU yorulmadan
+  beklenir.
+
+---
+
+## 11. Otonom Gelistirme Yol Haritasi (6 Asama)
+
+1. **Asama 1**: Proje temelleri (src/inc/obj + Makefile, `-Wall -Wextra
+   -Werror`) + Lexer/Parser + AST. Girdi gecici olarak `readline` ile; main
+   AST'yi ekrana loglar.
+2. **Asama 2**: Executor + pipe/fork/execve/dup2 + waitpid senkronizasyonu +
+   sigaction (SIGINT/SIGQUIT).
+3. **Asama 3**: `readline` cikarilir; termios Raw mod + kendi okuma dongusu +
+   Backspace + escape sequence ayristirma.
+4. **Asama 4**: ZeroMQ entegrasyonu (C istemcisi, non-blocking, EAGAIN).
+5. **Asama 5**: ANSI Ghost Text render + imlec yonetimi + Tab ile kabul.
+6. **Asama 6**: Python Markov daemon (pyzmq + 3. derece Markov + preprocessing
+   + backoff).
+
+Her asama sonunda `make` ile derlenir ve calistirilarak sinanir.

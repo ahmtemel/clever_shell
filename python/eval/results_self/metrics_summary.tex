@@ -1,0 +1,19 @@
+\begin{table}[htbp]
+  \centering
+  \caption{Önerilen yapılandırmanın temel performans metrikleri. Kaynak: kabuk geçmişi (\texttt{Kendi kabuk geçmişim}, 730 eğitim / 182 test).}
+  \label{tab:metrics_summary}
+  \begin{tabular}{lrrrrrrrrrrr}
+    \toprule
+    Yapılandırma & KSR (\%) & Doğruluk@1 (\%) & Doğruluk@3 (\%) & Önek Doğruluğu (\%) & Önek-Koş. Tamamlama (≥2 kar.) (\%) & Top-5 Komut Kabul Oranı (\%) & Kapsama (\%) & Gecikme p50 (ms) & Gecikme p99 (ms) & Bağlam Sayısı & Bellek (KB) \\
+    \midrule
+    \textbf{Önerilen (k=3, λ=0,005)} & \textbf{34.3} & \textbf{25.5} & \textbf{46.1} & \textbf{47.6} & \textbf{46.0} & \textbf{49.2} & \textbf{79.4} & \textbf{0.032} & \textbf{0.091} & \textbf{229} & \textbf{88.4} \\
+    k=1 (tekli bağlam) & 34.3 & 25.5 & 46.1 & 47.6 & 46.0 & 49.2 & 79.4 & 0.033 & 0.097 & 87 & 41.2 \\
+    k=2 (ikili bağlam) & 34.3 & 25.5 & 46.1 & 47.6 & 46.0 & 49.2 & 79.4 & 0.033 & 0.093 & 170 & 65.9 \\
+    Geri alma yok (k=3) & 34.3 & 25.5 & 46.1 & 47.6 & 46.0 & 49.2 & 77.6 & 0.033 & 0.110 & 229 & 88.4 \\
+    λ=0 (azalma yok) & 34.3 & 25.5 & 46.1 & 47.6 & 46.0 & 49.2 & 79.4 & 0.033 & 0.099 & 229 & 88.4 \\
+    λ=0,02 (hızlı azalma) & 34.3 & 25.5 & 46.1 & 47.6 & 46.0 & 49.2 & 79.4 & 0.033 & 0.096 & 229 & 88.4 \\
+    Yalnızca frekans & 34.2 & 9.8 & 46.1 & 47.6 & 46.0 & 49.2 & 79.4 & 0.033 & 0.093 & 229 & 88.4 \\
+    En sık komut & 32.5 & 9.8 &  & 36.1 & 35.3 &  & 72.2 & 0.017 & 0.024 & 0 & 0.1 \\
+    \bottomrule
+  \end{tabular}
+\end{table}
